@@ -11,12 +11,13 @@ namespace MultimodelComputeShaders.Pipelines
 {
     public class UniformSamplingTimePipeline : GameWindow
     {
+
         bool useNoisy = false;
         ISisoProcess realPlant;
         ISisoProcess nominalPlant;
-        const int numberOfAdditionalSystems = 3;
+        const int numberOfAdditionalSystems = 100;
         Stack<int> modelSwitchQueue = new Stack<int>(new int[] { 1, 2, 1, 3, 1, 2, 3, 2, 1, 2, 3, 2, 1 });
-        IModelProvider modelProvider = new DeterministicModelProvider();
+        IModelProvider modelProvider = new RandomModelProvider();
 
         PID realController;
         IPIDTuner controllerFactory = MatlabPidTuner.Create();
@@ -231,16 +232,24 @@ namespace MultimodelComputeShaders.Pipelines
 
 
             ssbo = CreateInputBuffer(gComputeProgram, dataBuffer, structSize, ssbo);
-
+            
+            Stopwatch performanceWatchDog = new Stopwatch();
+            
+            performanceWatchDog.Start();
             GL.DispatchCompute(1, 1, 1);
 
             GL.MemoryBarrier(MemoryBarrierFlags.AllBarrierBits);
+            Debug.WriteLine($"Compute shader executed in {performanceWatchDog.ElapsedMilliseconds} ms");
+
             var outPoint = GL.MapNamedBuffer(ssbo, BufferAccess.ReadWrite);
 
             var cachedData = Helpers.MarshalUnmananagedArray2Struct<ShaderSystemBuffer>(outPoint, dataBuffer.Length);
             knowledgeBase.Clear();
             knowledgeBase.AddRange(cachedData);
+            performanceWatchDog.Stop();
 
+            Debug.WriteLine($"Compute shader executed and memory copied in {performanceWatchDog.ElapsedMilliseconds} ms");
+            
             for (int i = 1; i < numberOfAdditionalSystems + 1; i++)
             {
                 matlabOutputArrays[i].Add(RoundResult(cachedData[i].plotOutput));
