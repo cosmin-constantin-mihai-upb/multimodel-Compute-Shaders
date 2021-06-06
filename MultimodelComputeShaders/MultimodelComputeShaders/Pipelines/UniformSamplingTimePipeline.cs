@@ -5,17 +5,17 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 
 namespace MultimodelComputeShaders.Pipelines
 {
     public class UniformSamplingTimePipeline : GameWindow
     {
-
         bool useNoisy = false;
         ISisoProcess realPlant;
         ISisoProcess nominalPlant;
-        const int numberOfAdditionalSystems = 100;
+        const int numberOfAdditionalSystems = 10000;
         Stack<int> modelSwitchQueue = new Stack<int>(new int[] { 1, 2, 1, 3, 1, 2, 3, 2, 1, 2, 3, 2, 1 });
         IModelProvider modelProvider = new RandomModelProvider();
 
@@ -39,6 +39,10 @@ namespace MultimodelComputeShaders.Pipelines
         List<List<float>> matlabOutputArrays = new List<List<float>>();
         Queue<double> uHistory = new Queue<double>();
         Queue<double> yHistory = new Queue<double>();
+
+        List<long> inputBufferTimes = new List<long>();
+        List<long> computeDispatchTimes = new List<long>();
+        List<long> outputBufferTimes = new List<long>();
 
         protected override void OnLoad(EventArgs ex)
         {
@@ -176,11 +180,17 @@ namespace MultimodelComputeShaders.Pipelines
             frameCount++;
             if (frameCount % 600 == 0)
             {
+                Debug.WriteLine($"avg in buffer time {TimeSpan.FromTicks((long)inputBufferTimes.Average()).TotalMilliseconds}");
+                Debug.WriteLine($"avg cs dispatch time {TimeSpan.FromTicks((long)computeDispatchTimes.Average()).TotalMilliseconds}");
+                Debug.WriteLine($"avg out buffer time {TimeSpan.FromTicks((long)outputBufferTimes.Average()).TotalMilliseconds}");
+
                 for (int i = 0; i < matlabOutputArrays.Count; i++)
                 {
                     var md = matlabOutputArrays[i];
                     Debug.WriteLine(md.PrintAsMatlabArrayDefinition($"A{i}"));
                 }
+
+             
 
                 Debug.WriteLine("Plot4Arrays(A0, A1, A2, A3)");
                 Random r = new Random();
@@ -229,17 +239,23 @@ namespace MultimodelComputeShaders.Pipelines
 
                 dataBuffer[i].yknAverage = ykavg;
             }
+            Stopwatch performanceWatchDog = new Stopwatch();
 
+            performanceWatchDog.Start();
 
             ssbo = CreateInputBuffer(gComputeProgram, dataBuffer, structSize, ssbo);
-            
-            Stopwatch performanceWatchDog = new Stopwatch();
-            
-            performanceWatchDog.Start();
+            var inputBufferTimeSample = performanceWatchDog.ElapsedTicks;
+            inputBufferTimes.Add(inputBufferTimeSample);
+            Debug.WriteLine($"Compute shader in buffer created in {inputBufferTimeSample} ticks");
+
             GL.DispatchCompute(1, 1, 1);
 
             GL.MemoryBarrier(MemoryBarrierFlags.AllBarrierBits);
-            Debug.WriteLine($"Compute shader executed in {performanceWatchDog.ElapsedMilliseconds} ms");
+
+            var csTimeSample = performanceWatchDog.ElapsedTicks;
+            computeDispatchTimes.Add(csTimeSample);
+
+            Debug.WriteLine($"Compute shader executed in {csTimeSample} ticks");
 
             var outPoint = GL.MapNamedBuffer(ssbo, BufferAccess.ReadWrite);
 
@@ -247,9 +263,10 @@ namespace MultimodelComputeShaders.Pipelines
             knowledgeBase.Clear();
             knowledgeBase.AddRange(cachedData);
             performanceWatchDog.Stop();
+            var memoryMarshalTime = performanceWatchDog.ElapsedTicks;
+            outputBufferTimes.Add(memoryMarshalTime);
+            Debug.WriteLine($"Compute shader executed and memory copied in {memoryMarshalTime} ticks");
 
-            Debug.WriteLine($"Compute shader executed and memory copied in {performanceWatchDog.ElapsedMilliseconds} ms");
-            
             for (int i = 1; i < numberOfAdditionalSystems + 1; i++)
             {
                 matlabOutputArrays[i].Add(RoundResult(cachedData[i].plotOutput));
